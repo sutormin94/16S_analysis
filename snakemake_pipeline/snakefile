@@ -1,0 +1,123 @@
+import os
+from snakemake.logging import logger
+
+PWD = '/home/niagara/Storage/MetaRus/V_Mamontov/test_2'
+
+SAMPLES=os.listdir(f'{PWD}/all_data')
+logger.info(SAMPLES)
+
+#Prepare dataset basename
+Sample_list = []
+for sample in SAMPLES:
+    Sample_list.append(sample.rstrip('fastq.gz'))
+logger.info(Sample_list)
+
+#variable set
+trim_path = '/home/niagara/Progs/Trimmomatic-0.39/trimmomatic-0.39.jar'
+Adapters = '/home/niagara/Progs/Trimmomatic-0.39/adapters/All_TruSeq.fa'
+
+#snakemake rules
+ruleorder: decompress > compress > trimmomatic > fastqc_2 > dada_1
+
+rule all:
+    input:
+        expand('{PWD}/results/phyloseq.png', PWD = PWD),
+        expand('{PWD}/results/all_phylogeny.tsv', PWD = PWD),
+        expand('{PWD}/results/OTU_table_filtered.tsv', PWD = PWD),
+        expand('{PWD}/seqtabnochim.fasta', PWD = PWD),
+        expand('{PWD}/Fastqc_analysis/trimmed/{sample}_fastqc.html', PWD = PWD, sample = Sample_list),
+        expand('{PWD}/trimmed/{sample}.fastq.gz', PWD = PWD, sample = Sample_list),
+        expand('{PWD}/Fastqc_analysis/{sample}_fastqc.html', PWD = PWD, sample = Sample_list),
+        expand('{PWD}/cut/{sample}.fastq.gz', PWD = PWD, sample = Sample_list)
+
+rule decompress:
+    input:
+        '{PWD}/all_data/{sample}.fastq.gz'
+    output:
+        a = '{PWD}/Fastqc_analysis/{sample}_fastqc.html',
+        b = '{PWD}/all_data/{sample}.fastq'
+    shell:
+        'fastqc -t 1 -o {PWD}/Fastqc_analysis/ {input} ;'
+        'gzip -d {input}'
+
+rule cut_lines:
+    input:
+        rules.decompress.output.b
+    output:
+        '{PWD}/cut/{sample}.fastq'
+    shell:
+        'head -n 400000 {input} > {output}'
+
+rule compress:
+    input:
+        a = rules.cut_lines.output,
+        b = rules.decompress.output.b
+    output:
+        '{PWD}/cut/{sample}.fastq.gz'
+    shell:
+        'gzip {input.a} ;'
+        'gzip {input.b}'
+
+rule trimmomatic:
+    input:
+        rules.compress.output
+    output:
+        '{PWD}/trimmed/{sample}.fastq.gz'
+    shell:
+        'java -jar {trim_path} SE -threads 1 -phred33 {input} {output} ILLUMINACLIP:{Adapters}:2:30:10 LEADING:0 TRAILING:0 SLIDINGWINDOW:4:0 HEADCROP:17 MINLEN:150'
+
+rule fastqc_2:
+    input:
+        rules.trimmomatic.output
+    output:
+        '{PWD}/Fastqc_analysis/trimmed/{sample}_fastqc.html'
+    shell:
+        'fastqc -t 1 -o {PWD}/Fastqc_analysis/trimmed/ {input}'
+
+rule dada_1:
+    input:
+        expand('{PWD}/Fastqc_analysis/trimmed/{sample}_fastqc.html', PWD = PWD, sample = Sample_list)
+    output:
+        '{PWD}/seqtabnochim.fasta'
+    shell:
+        'Rscript DADA2_part_1.R {PWD}'
+
+rule mmseq_part_1:
+    input:
+        rules.dada_1.output
+    output:
+        '{PWD}/mmseq/new_DB_clu_rep.fasta'
+    shell:
+        'bash mmseq_clustering.sh {PWD}'
+
+rule mmseq_part_2:
+    input:
+        rules.mmseq_part_1.output
+    output:
+        '{PWD}/OTUs_output/OTU_table.tsv'
+    shell:
+        'python mmseq2_clustering.py {PWD}'
+
+rule filter_OTUs:
+    input:
+        rules.mmseq_part_2.output
+    output:
+        '{PWD}/results/OTU_table_filtered.tsv'
+    shell:
+        'python filter_OTUs.py {PWD}'
+
+rule dada_2:
+    input:
+        rules.mmseq_part_2.output
+    output:
+        '{PWD}/results/all_phylogeny.tsv'
+    shell:
+        'Rscript DADA2_part_2.R {PWD}'
+
+rule phyloseq:
+    input:
+        rules.dada_2.output
+    output:
+        '{PWD}/results/phyloseq.png'
+    shell:
+        'Rscript phyloseq.R {PWD}'
